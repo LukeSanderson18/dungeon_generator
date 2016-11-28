@@ -25,7 +25,7 @@ def neg3(x):
   return [-x[i] for i in range(3)]
 
 def xy_location(x):
-  return (int(x[0]+0.5), int(x[1]+0.5))
+  return (round(x[0]), round(x[1]))
 
 def rotateZ(v, angle):
   sz = math.sin(angle * (3.14159/180))
@@ -33,9 +33,14 @@ def rotateZ(v, angle):
   return [
     cz * v[0] - sz * v[1],
     sz * v[0] + cz * v[1],
-    0
+    v[2]
   ]
 
+def lim360(x):
+  x = x + 360 if x < 0 else x
+  x = x - 360 if x >= 360 else x
+  return round(x)
+  
 
 class dungeon_generator:
   def __init__(self):  
@@ -134,6 +139,53 @@ class dungeon_generator:
     root = new_scene.GetRootNode()
     root.AddChild(dest_node)
 
+  def try_tile(self, new_scene, todo, edges, pos, angle, incoming, in_sel):
+    in_feature_name, in_tile_name, in_trans, in_rot = incoming[in_sel]
+
+    # from the feature, set the position and rotation of the new tile
+    new_angle = lim360(angle - in_rot[2])
+    tile_pos = add3(pos, rotateZ(neg3(in_trans), new_angle))
+    tile_name = in_tile_name
+    print(tile_pos, new_angle, tile_name)
+
+    # outgoing features are indexed on the tile name
+    outgoing = self.outgoing[tile_name]
+
+    # check existing edges to see if this tile fits.
+    # although we know that one edge fits, we haven't checked the others.
+    for out_sel in range(len(outgoing)):
+      out_feature_name, out_tile_name, out_trans, out_rot = outgoing[out_sel]
+      new_pos = add3(tile_pos, rotateZ(out_trans, new_angle))
+      if xy_location(new_pos) in edges:
+        edge_pos, edge_angle, edge_feature_name, edge_satisfied = edges[xy_location(new_pos)]
+        print("check", new_pos, edge_pos, out_feature_name, edge_feature_name, edge_satisfied)
+        if edge_satisfied:
+          return False
+        # check the height of the join.
+        # note: we should also check that the incoming matches the outgoing.
+        if abs(edge_pos[2] - new_pos[2]) > 0.01:
+          print("fail")
+          return False
+
+    # add all outgoing edges to the todo list and mark edges
+    # note: if there were multiple outgoing edge choices, we would have to select them.
+    for out_sel in range(len(outgoing)):
+      out_feature_name, out_tile_name, out_trans, out_rot = outgoing[out_sel]
+      new_pos = add3(tile_pos, rotateZ(out_trans, new_angle))
+      if not xy_location(new_pos) in edges:
+        # make an unsatisfied edge
+        edge = (new_pos, lim360(new_angle + out_rot[2]), out_feature_name, None)
+        edges[xy_location(new_pos)] = edge
+        todo.append(edge)
+      else:
+        edge_pos, edge_angle, edge_feature_name, edge_satisfied = edges[xy_location(new_pos)]
+        edges[xy_location(new_pos)] = (edge_pos, edge_angle, edge_feature_name, out_feature_name)
+
+    self.make_node(new_scene, tile_name, tile_pos, new_angle)
+    print("pass")
+    return True
+
+
   def create_dungeon(self, new_scene, feature_name):
     # clone the tile meshes and name them after their original nodes.
     tile_meshes = self.tile_meshes = {}
@@ -143,35 +195,27 @@ class dungeon_generator:
       tile_meshes[name] = tile_mesh.Clone(fbx.FbxObject.eDeepClone, None)
       tile_meshes[name].SetName(name)
 
-    been_here = {}
+    edges = {}
     pos = (0, 0, 0)
     angle = 0
-    out_rot = (0, 0, 0)
 
-    for i in range(40):
-      been_here[xy_location(pos)] = 1
-      print(been_here, pos)
+    # create an unsatisfied edge
+    todo = [(pos, angle, feature_name, False)]
+    num_tiles = 0
+    random.seed(1)
 
-      # incoming features are indexed on the feature name
-      incoming = self.incoming[feature_name]
-      in_sel = int(random.randrange(len(incoming)))
-      in_feature_name, in_tile_name, in_trans, in_rot = incoming[in_sel]
+    # this loop processes one edge from the todo list.
+    while len(todo) and num_tiles < 200:
+      pos, angle, out_feature_name, in_feature_name = todo.pop()
 
-      # from the feature, set the position and rotation of the new tile
-      angle += out_rot[2] - in_rot[2]
-      angle = angle + 360 if angle < 0 else angle
-      angle = angle - 360 if angle >= 360 else angle
-      angle = int(angle + 0.5)
-      pos = add3(pos, rotateZ(neg3(in_trans), angle))
-      tile_name = in_tile_name
-      print(pos, angle, tile_name)
+      print(xy_location(pos))
 
-      self.make_node(new_scene, tile_name, pos, angle)
+      for i in range(4):
+        # incoming features are indexed on the feature name
+        incoming = self.incoming[out_feature_name]
+        in_sel = int(random.randrange(len(incoming)))
 
-      # outgoing features are indexed on the tile name
-      outgoing = self.outgoing[tile_name]
-      out_sel = int(random.randrange(len(outgoing)))
-      feature_name, out_tile_name, out_trans, out_rot = outgoing[out_sel]
+        if self.try_tile(new_scene, todo, edges, pos, angle, incoming, in_sel):
+          break
 
-      # find the position of the feature relative to the current object
-      pos = add3(pos, rotateZ(out_trans, angle))
+      num_tiles += 1
